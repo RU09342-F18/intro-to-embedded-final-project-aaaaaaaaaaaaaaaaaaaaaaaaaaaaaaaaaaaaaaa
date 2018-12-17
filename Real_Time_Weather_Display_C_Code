@@ -1,0 +1,604 @@
+//Final Project - Embedded Systems
+//Michael Maloney and Michael Sorce
+//Last Updated - 12/17/18
+//Code for MSP430F5529
+
+//Includes MSP430F5529 Header File
+#include <msp430.h> 
+
+int temp = 0;       //holds temperature int value
+int windspeed = 0;  //holds wind speed int value
+int humidity = 0;   //holds humidity value
+
+int sT = 0; //holds scaled temperature value (number of LEDs to turn on)
+int sS = 0; //holds scaled wind speed value (number of LEDs to turn on)
+int sH = 0; //holds scaled humidity value (number of LEDs to turn on)
+
+//ints used to get temp windspeed and humidity values
+//1: 10s place of the final number 2: 1s place of final number
+//i.e. t1 = 5; t2 = 8; => temp = 58
+int t1 = 0;
+int t2 = 0;
+int h1 = 0;
+int h2 = 0;
+int s1 = 0;
+int s2 = 0;
+
+//flags that determine what data is being displayed, temp, windspeed, or humidity
+int t_flag = 0;
+int h_flag = 0;
+int s_flag = 0;
+
+//flag to used to determine if the number being registered is supposed to be in the ones or tens place
+int first_t = 0;
+int first_h = 0;
+int first_s = 0;
+
+int ree = 0;//Holds value of data received over UART for processing
+
+int state = 0;//flag that signifies which data is being displayed temp, windspeed, or humidity
+
+
+int main(void)
+{
+    //stop watchdog timer
+    WDTCTL = WDTPW | WDTHOLD;
+
+    //debounce timer set up
+        TA0CCTL0 = CCIE;// CCR0 interrupt enabled
+        TA0CCR0 = 50000;// CCR0 set to 50000 clock cycles
+
+
+    //Pin set up for outputs
+        P1DIR |= BIT2 + BIT3 + BIT4 + BIT5; //LED 0, 1, 2, 3
+        P6DIR |= BIT0 + BIT1 + BIT2 + BIT3; //LED 4, 5, 6, 7
+        P3DIR |= BIT3 + BIT4; //LED 8, 9
+
+        //BIT0-3: RGB control: indicator to show what the meter reading is showing (temp, wind speed, or humidity)
+        P3DIR |= BIT0 + BIT1 + BIT2;
+
+        //Initially turns all LEDs off
+        P1OUT &= ~(BIT2 + BIT3 + BIT4 + BIT5);
+        P3OUT &= ~(BIT0 + BIT1 + BIT2 + BIT3 + BIT4);
+        P6OUT &= ~(BIT0 + BIT1 + BIT2 + BIT3);
+
+
+     //Button set up
+        P1REN |= BIT1;// Enable P1.1 internal resistance
+        P1OUT |= BIT1;// Set P1.1 as pull-Up resistance
+        P1IES &= ~BIT1;// P1.1 Lo/Hi edge
+        P1IFG &= ~BIT1;// P1.1 IFG cleared
+        P1IE |= BIT1;// P1.1 interrupt enabled
+
+
+
+    //UART Initialization
+        P4SEL |= (BIT4 + BIT5); //Sets P4.4 to UART TX mode, P4.5 to UART RX mode
+
+        UCA1CTL1 |= UCSWRST;//puts state machine in reset
+        UCA1CTL1 = UCSSEL_2; //UART uses SMCLOCK
+
+        //The following three lines of code sets the baud-rate to 9600bps at 1 MHz (SMCLK)
+        //Found using TI Sample Code
+        UCA1BR0 = 6;
+        UCA1BR1 = 0;
+        UCA1MCTL |= UCBRS_0 + UCBRF_13 + UCOS16;
+
+        UCA1CTL1 &= ~UCSWRST;//starts UART state machine
+        UCA1IE |= UCRXIE;// Enable USCI_A0 RX interrupt
+
+
+    //Function Timer Initialization
+        TA1CCTL0 = CCIE;// CCR0 interrupt enabled
+        TA1CCR0 = 65535;//CCR0 set to max 0xFFFF
+        TA1CTL = TASSEL_2 + MC_1 + TACLR + ID_3;// SMCLK, upmode, clear TAR, 1/8 divider
+
+        __bis_SR_register(LPM0_bits + GIE);// Enter low power mode 0 with interrupts
+        __no_operation();// For debugger
+}
+
+
+
+
+
+
+// Timer1 A0 interrupt service routine
+#pragma vector=TIMER1_A0_VECTOR
+__interrupt void TIMER1_A0_ISR(void)
+{
+    //Turns all LEDs off
+    P1OUT &= ~(BIT2 + BIT3 + BIT4 + BIT5);
+    P3OUT &= ~(BIT3 + BIT4);
+    P6OUT &= ~(BIT0 + BIT1 + BIT2 + BIT3);
+
+    //Finds temp in a scale from 1-10
+    sT = temp / 10;
+    if(temp % 10 >= 5)//Round up correction
+    {
+        sT++;
+    }
+    //Finds windspeed in a scale from 1-10
+    sS = windspeed / 10;
+    if(windspeed % 10 >= 5)//Round up correction
+    {
+        sS++;
+    }
+    //Finds humidity in a scale from 1-10
+    sH = humidity / 10;
+    if(humidity % 10 >= 5)//Round up correction
+    {
+        sH++;
+    }
+
+    //Depending on which data is supposed to be displayed
+    //state = 0 => temp
+    //state = 1 => humidity
+    //state = 2 => windspeed
+    switch(state)
+    {
+    case 0://T
+        //makes indicator LED Red to show that temp is being displayed
+        P3OUT &= ~(BIT1 + BIT2);
+        P3OUT |= BIT0;
+
+        //Turns on LEDs to correspond with the normalized temperature sT
+        if(sT >= 1)
+        {
+            P1OUT |= BIT2;
+        }
+        else
+        {
+            P1OUT &= ~BIT2;
+        }
+
+        if(sT >= 2)
+        {
+            P1OUT |= BIT3;
+        }
+        else
+        {
+            P1OUT &= ~BIT3;
+        }
+
+        if(sT >= 3)
+        {
+            P1OUT |= BIT4;
+        }
+        else
+        {
+            P1OUT &= ~BIT4;
+        }
+
+        if(sT >= 4)
+        {
+            P1OUT |= BIT5;
+        }
+        else
+        {
+            P1OUT &= ~BIT5;
+        }
+
+        if(sT >= 5)
+        {
+            P6OUT |= BIT0;
+        }
+        else
+        {
+            P6OUT &= ~BIT0;
+        }
+
+        if(sT >= 6)
+        {
+            P6OUT |= BIT1;
+        }
+        else
+        {
+            P6OUT &= ~BIT1;
+        }
+
+        if(sT >= 7)
+        {
+            P6OUT |= BIT2;
+        }
+        else
+        {
+            P6OUT &= ~BIT2;
+        }
+
+        if(sT >= 8)
+        {
+            P6OUT |= BIT3;
+        }
+        else
+        {
+            P6OUT &= ~BIT3;
+        }
+
+        if(sT >= 9)
+        {
+            P3OUT |= BIT3;
+        }
+        else
+        {
+            P3OUT &= ~BIT3;
+        }
+
+        if(sT >= 10)
+        {
+            P3OUT |= BIT4;
+        }
+        else
+        {
+            P3OUT &= ~BIT4;
+        }
+        break;
+    case 1://H
+        //makes indicator LED Green to show that humidity is being displayed
+        P3OUT &= ~(BIT0 + BIT2);
+        P3OUT |= BIT1;
+
+        //Turns on LEDs to correspond with the normalized Humidity sH
+         if(sH >= 1)
+        {
+            P1OUT |= BIT2;
+        }
+        else
+        {
+            P1OUT &= ~BIT2;
+        }
+
+        if(sH >= 2)
+        {
+            P1OUT |= BIT3;
+        }
+        else
+        {
+            P1OUT &= ~BIT3;
+        }
+
+        if(sH >= 3)
+        {
+            P1OUT |= BIT4;
+        }
+        else
+        {
+            P1OUT &= ~BIT4;
+        }
+
+        if(sH >= 4)
+        {
+            P1OUT |= BIT5;
+        }
+        else
+        {
+            P1OUT &= ~BIT5;
+        }
+
+        if(sH >= 5)
+        {
+            P6OUT |= BIT0;
+        }
+        else
+        {
+            P6OUT &= ~BIT0;
+        }
+
+        if(sH >= 6)
+        {
+            P6OUT |= BIT1;
+        }
+        else
+        {
+            P6OUT &= ~BIT1;
+        }
+
+        if(sH >= 7)
+        {
+            P6OUT |= BIT2;
+        }
+        else
+        {
+            P6OUT &= ~BIT2;
+        }
+
+        if(sH >= 8)
+        {
+            P6OUT |= BIT3;
+        }
+        else
+        {
+            P6OUT &= ~BIT3;
+        }
+
+        if(sH >= 9)
+        {
+            P3OUT |= BIT3;
+        }
+        else
+        {
+            P3OUT &= ~BIT3;
+        }
+
+        if(sH >= 10)
+        {
+            P3OUT |= BIT4;
+        }
+        else
+        {
+            P3OUT &= ~BIT4;
+        }
+            break;
+    case 2://S
+        //makes indicator LED Blue to show that windspeed is being displayed
+        P3OUT &= ~(BIT0 + BIT1);
+        P3OUT |= BIT2;
+
+        //Turns on LEDs to correspond with the normalized windspeed sS
+         if(sS >= 1)
+        {
+            P1OUT |= BIT2;
+        }
+        else
+        {
+            P1OUT &= ~BIT2;
+        }
+
+        if(sS >= 2)
+        {
+            P1OUT |= BIT3;
+        }
+        else
+        {
+            P1OUT &= ~BIT3;
+        }
+
+        if(sS >= 3)
+        {
+            P1OUT |= BIT4;
+        }
+        else
+        {
+            P1OUT &= ~BIT4;
+        }
+
+        if(sS >= 4)
+        {
+            P1OUT |= BIT5;
+        }
+        else
+        {
+            P1OUT &= ~BIT5;
+        }
+
+        if(sS >= 5)
+        {
+            P6OUT |= BIT0;
+        }
+        else
+        {
+            P6OUT &= ~BIT0;
+        }
+
+        if(sS >= 6)
+        {
+            P6OUT |= BIT1;
+        }
+        else
+        {
+            P6OUT &= ~BIT1;
+        }
+
+        if(sS >= 7)
+        {
+            P6OUT |= BIT2;
+        }
+        else
+        {
+            P6OUT &= ~BIT2;
+        }
+
+        if(sS >= 8)
+        {
+            P6OUT |= BIT3;
+        }
+        else
+        {
+            P6OUT &= ~BIT3;
+        }
+
+        if(sS >= 9)
+        {
+            P3OUT |= BIT3;
+        }
+        else
+        {
+            P3OUT &= ~BIT3;
+        }
+
+        if(sS >= 10)
+        {
+            P3OUT |= BIT4;
+        }
+        else
+        {
+            P3OUT &= ~BIT4;
+        }
+            break;
+    default://default do nothing
+            break;
+    }
+}
+
+
+
+
+
+
+//UART Interrupt Vector and ISR
+#pragma vector = USCI_A1_VECTOR
+__interrupt void USCI_A1_ISR(void)
+{
+    //Case statement to decipher UART interrupt (0: No Interrupt, 2: RX Interrupt, 4: TX Interrupt)
+    switch(__even_in_range(UCA1IV, 4))
+    {
+    case 0://Vector 0: No Interrupt
+        break;
+    case 2://Vector 2: RXIFG (interrupt on receiving data)
+
+        ree = UCA1RXBUF;//holds received number
+
+        if(ree == 84 || ree == 72 || ree == 83)//if Ascii for T, H, or S was recieved
+        {
+            //resets first flags in case of error in receiving the data
+            first_t = 0;
+            first_h = 0;
+            first_s = 0;
+
+            switch(ree)//depending on which character was recieved
+            {
+            case 84://T
+                UCA1TXBUF = ree;//echo character
+                //sets temp flag (next 2 numbers received are expected to be a temperature value)
+                t_flag = 1;
+                h_flag = 0;
+                s_flag = 0;
+                break;
+            case 72://H
+                UCA1TXBUF = ree;//echo character
+                //sets humidity flag (next 2 numbers received are expected to be a humidity value)
+                t_flag = 0;
+                h_flag = 1;
+                s_flag = 0;
+                break;
+            case 83://S
+                UCA1TXBUF = ree;//echo character
+                //sets windspeed flag (next 2 numbers received are expected to be a windspeed value)
+                t_flag = 0;
+                h_flag = 0;
+                s_flag = 1;
+                break;
+            default:
+                break;
+            }
+
+        }
+        else if(ree > 47 && ree < 58)//if ascii for any numbers were received
+        {
+            if(t_flag == 1)//if number is expected to be a temperature
+            {
+                if(first_t == 0)//if number is the first character in the temp
+                {
+                    t1 = (ree - 48) * 10;//converts ascii to int and move character to 10s place; stores in t1
+                    UCA1TXBUF = ree;//echos character
+                    first_t++;//indicated that the first character of temp has been received
+                }
+                else//if number is the second character in the temp
+                {
+                    t2 = ree - 48;//converts received character from ascii to int
+                    UCA1TXBUF = ree;//echos character
+                    temp = t1 + t2;//solves for actual temp based on 2 ints received
+                    t_flag = 0;//indicated program is no longer looking for a temp value
+                }
+
+            }
+            else if(h_flag == 1)//if number is expected to be a humidity
+            {
+                if(first_h == 0)//if number is the first character in the humidity
+                {
+                    h1 = (ree - 48) * 10;//converts ascii to int and move character to 10s place; stores in h1
+                    UCA1TXBUF = ree;//echos character
+                    first_h++;//no longer looking for first int in humidity
+                }
+                else
+                {
+                    h2 = ree - 48;//converts ascii to int
+                    humidity = h1 + h2;//solves for actual humidity based on 2 ints received
+                    UCA1TXBUF = ree;//echos character
+                    h_flag = 0;//program no longer looking for a humidity
+                }
+            }
+            else if(s_flag == 1)//if number is expected to be a windspeed
+            {
+                if(first_s == 0)//if number is the first character in the windspeed
+                {
+                    s1 = (ree - 48) * 10;//converts ascii to int and move character to 10s place; stores in s1
+                    UCA1TXBUF = ree;//echos character
+                    first_s++;//no longer looking for first number of windspeed
+                }
+                else
+                {
+                    s2 = ree - 48;//converts ascii to int
+                    windspeed = s1 + s2;//solves for actual windspeed based on 2 ints received
+                    UCA1TXBUF = ree;//echos character
+                    s_flag = 0;//program no longer looking for a windspeed
+                }
+            }
+        }
+
+        break;
+
+
+    case 4://Vector 4: TXIFG (interrupt on transmitting data)
+        break;
+    default://Do nothing
+        break;
+
+    }
+}
+
+
+
+
+//Button P1.1 interrupt Vector
+//when button is pressed, start Timer0 A0
+//timer used for button debouncing
+#pragma vector=PORT1_VECTOR
+__interrupt void Port_1(void)
+{
+    switch( __even_in_range( P1IV, P1IV_P1IFG7 )) {
+    case P1IV_P1IFG1:// Pin 1 (button 2)
+        TA0CTL = TASSEL_2 + MC_1 + TACLR + ID_2;// SMCLK, upmode, clear TAR
+        break;
+    default:   _never_executed();
+
+    }
+
+}
+
+
+//Timer used for button deboucing
+// Timer0 A0 interrupt service routine
+#pragma vector=TIMER0_A0_VECTOR
+__interrupt void TIMER0_A0_ISR(void)
+{
+
+    //Turns all LEDs off to clear previous data
+    //cycles through state (which data is being displayed)
+    //i.e. if currently showing temp and button pressed => show humidity
+
+    if(state == 0)
+    {
+        state = 1;
+        P1OUT &= ~(BIT2 + BIT3 + BIT4 + BIT5);
+        P3OUT &= ~(BIT0 + BIT1 + BIT2 + BIT3 + BIT4);
+        P6OUT &= ~(BIT0 + BIT1 + BIT2 + BIT3);
+    }
+    else if(state == 1)
+    {
+        state =2;
+        P1OUT &= ~(BIT2 + BIT3 + BIT4 + BIT5);
+        P3OUT &= ~(BIT0 + BIT1 + BIT2 + BIT3 + BIT4);
+        P6OUT &= ~(BIT0 + BIT1 + BIT2 + BIT3);
+    }
+    else if(state == 2)
+    {
+        state = 0;
+
+        P1OUT &= ~(BIT2 + BIT3 + BIT4 + BIT5);
+        P3OUT &= ~(BIT0 + BIT1 + BIT2 + BIT3 + BIT4);
+        P6OUT &= ~(BIT0 + BIT1 + BIT2 + BIT3);
+    }
+    TA0CTL = MC_0;//turns off Timer A0
+    TA0CTL = TACLR;//Clears Timer A0
+}
+
