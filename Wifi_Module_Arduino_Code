@@ -1,1 +1,248 @@
 
+ /*
+  * Author: Emmanuel Odunlade 
+  * Complete Project Details http://randomnerdtutorials.com
+  * Modified by: Michael Maloney
+  */
+  
+#include <ArduinoJson.h>    //For JSON
+#include "ESP8266WiFi.h"    //ESP8266 header
+#include <WiFiClient.h>     //Wifi header
+
+char ssid[] = "Rowan_IoT";        //SSID for wifi string
+char pass[] = "networkB"; //Wifi password string
+
+WiFiClient client;        //Client created
+
+const bool DEBUG = true; //Debug variable for debugging in serial monitor
+
+
+// Open Weather Map API server name
+const char server[] = "api.openweathermap.org";
+
+const String nameOfCity = "glassboro,us"; //City name for url string 
+
+const String apiKey = "b8aad0799010c635b31e8c6345347c97";   //api key for website -- url string use
+
+String text;  //text string used in JSON parsing
+
+int jsonend = 0;             //end of JSON function
+boolean startJson = false;   //JSON start function bool
+int status = WL_IDLE_STATUS; //Code I dont really understand
+
+
+#define JSON_BUFF_DIMENSION 2500 //defines dimension
+
+
+unsigned long lastConnectionTime = 1  * 10 * 1000;     // last time you connected to the server
+const unsigned long postInterval = 1 * 10 * 1000;      // posting interval of 10 seconds
+
+          
+void setup() {
+  Serial.begin(9600);
+
+  //text.reserve(JSON_BUFF_DIMENSION);
+
+  WiFi.begin(ssid,pass); // Technically should have password but the pass isnt needed for rowan iot, begins wifi
+  
+  Serial.println("connecting"); // For debugging technically, but filtered out from MSP anyway
+  
+  while (WiFi.status() != WL_CONNECTED) { //While not connected, delay 500ms and print .... 
+    delay(500); 
+     Serial.print(".");   // again for debugging, but filtered in MSP code
+  }
+  if (DEBUG == true){               //If debug bool is true, then debug stuff will pop up
+  Serial.println("wifi connected");
+  }
+  printWiFiStatus();
+}
+
+void loop() { 
+  
+  //OWM requires 10mins between request intervals -- Not true, 60 requests per minute
+  //check if 10mins has passed then conect again and pull
+      
+      if (millis() - lastConnectionTime > postInterval){
+    // note the time that the connection was made:
+    lastConnectionTime = millis();
+    makehttpRequest();
+  }
+}
+
+// print Wifi status
+void printWiFiStatus() {
+  
+  // print the SSID of the network you're attached to:
+  if (DEBUG == true){
+  Serial.print("SSID: ");
+  Serial.println(WiFi.SSID());
+  }
+  
+  // print your WiFi shield's IP address:
+  IPAddress ip = WiFi.localIP();
+  if (DEBUG == true){
+  Serial.print("IP Address: ");
+  Serial.println(ip);
+  }
+  
+  // print the received signal strength:
+  long rssi = WiFi.RSSI();
+  if (DEBUG == true){
+  Serial.print("signal strength (RSSI):");
+  Serial.print(rssi);
+  Serial.println(" dBm");
+  }
+  
+}
+
+// to request data from OWM
+void makehttpRequest() {
+  
+  // close any connection before send a new request to allow client make connection to server
+  client.stop();
+
+  // if there's a successful connection:
+  if (client.connect(server, 80)) {
+    if (DEBUG == true){
+    Serial.println("connecting...");
+    }
+    // send the HTTP PUT request:
+    client.println("GET /data/2.5/forecast?q=" + nameOfCity + "&APPID=" + apiKey + "&mode=json&units=imperial&cnt=2 HTTP/1.1"); //url of api website from strings above
+    client.println("Host: api.openweathermap.org");   //Other Wifi module code for client-server connections
+    client.println("User-Agent: ESP8266/1.0");
+    client.println("Connection: close");
+    client.println();
+
+    // if client times out from predetermined timeframe, stop client
+    unsigned long timeout = millis(); 
+    while (client.available() == 0) {
+      if (millis() - timeout > 500) {
+        if (DEBUG == true){
+        Serial.println(">>> Client Timeout !");
+        }
+        client.stop();
+        return;
+      }
+    }
+    
+    char c = 0;   //JSON char for parsing
+    while (client.available()) 
+    for(int i =0; i < 1000; i++){   //Arbitrary variable set for reading the data in the api
+                                    // could be optimized but would crash with other methods so will remain the same
+      c = client.read();          // c set to read client variable
+      //Serial.println("while available is true");
+      // since json contains equal number of open and close curly brackets, this means we can determine when a json is completely received  by counting
+      // the open and close occurences,
+      if (DEBUG == true){
+      Serial.print(c);  
+      }
+      if (c == '{') {
+        startJson = true;         // set startJson true to indicate json message has started
+        jsonend++;
+      }
+      if (c == '}') {
+        jsonend--;
+      }
+      if (startJson == true) {
+        text += c;
+      }
+      // if jsonend = 0 then we have have received equal number of curly braces 
+      if (jsonend == 0 && startJson == true) {
+        if (DEBUG == true){
+        Serial.println("equal number braces");  //Debugging, was previously an issue but not anymore
+        }
+        parseJson(text.c_str());  // parse c string text in parseJson function
+        text = "";                // clear text string for the next time
+        startJson = false;        // set startJson to false to indicate that a new message has not yet started
+      }
+      
+    }
+  }
+  else {
+    // if no connction was made:
+    if (DEBUG == true){
+    Serial.println("connection failed");
+    }
+    makehttpRequest();
+    return;
+  }
+}
+
+//to parse json data recieved from OWM
+void parseJson(const char * jsonString) {
+  //StaticJsonBuffer<4000> jsonBuffer;
+  const size_t bufferSize = 2*JSON_ARRAY_SIZE(1) + JSON_ARRAY_SIZE(2) + 4*JSON_OBJECT_SIZE(1) + 3*JSON_OBJECT_SIZE(2) + 3*JSON_OBJECT_SIZE(4) + JSON_OBJECT_SIZE(5) + 2*JSON_OBJECT_SIZE(7) + 2*JSON_OBJECT_SIZE(8) + 720;
+  DynamicJsonBuffer jsonBuffer(bufferSize);
+
+  // FIND FIELDS IN JSON TREE
+  JsonObject& root = jsonBuffer.parseObject(jsonString);
+  if (!root.success()) {
+    if (DEBUG == true){
+    Serial.println("parseObject() failed");
+    }
+    return;
+  }
+
+  JsonArray& list = root["list"];
+  JsonObject& nowT = list[0];   //NOW values 
+  JsonObject& later = list[1];  //LATER values
+                          // Separated in API
+
+  
+  //String city = root["city"]["name"];
+  
+  float tempNow = nowT["main"]["temp"];    // Array[][what you want in array] --- nowT["___"]["__"] returns value
+  float humidityNow = nowT["main"]["humidity"];
+  //String weatherNow = nowT["weather"][0]["description"];   
+  //int weatherIDNow = nowT["weather"][0]["id"];      // Not used in final project                
+  float windNow = nowT["wind"]["speed"];
+  //float tempLater = later["main"]["temp"];
+  
+  if (DEBUG == true){
+  Serial.println(tempNow); //Debug
+  }
+  
+  //float humidityLater = later["main"]["humidity"];
+  //String weatherLater = later["weather"][0]["description"];
+
+  DataAction(weatherIDNow, tempNow, humidityNow, windNow);    //
+ 
+  if (DEBUG == true){
+  Serial.println();
+  }
+  
+}
+
+//representing the data
+void DataAction(int weatherID, int tempN, int humidN, int windN) {  
+
+  int delaytime = 1000;   //Adds delay between each send because of procesing issues in MSP
+  Serial.print("T");
+  delay(delaytime);
+  
+  if (tempN < 10){    // If temp is less than 9 (i.e. only 1 digit), prints another "0" before the number so it's "0X"
+    Serial.print("0");
+    delay(delaytime);
+  }
+  Serial.print(tempN);
+  //delay(delaytime);
+  Serial.print("H");
+  delay(delaytime);
+  
+  if (humidN < 10){
+    Serial.print("0");
+    delay(delaytime);
+  }
+  Serial.print(humidN);
+  delay(delaytime);
+  Serial.print("S");
+ delay(delaytime);
+  
+  if (windN < 10){
+    Serial.print("0");
+    delay(delaytime);
+  }
+  Serial.print(windN);
+  delay(delaytime);
+
+}
